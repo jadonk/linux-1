@@ -26,8 +26,6 @@
 #include <linux/io.h>
 #include <linux/input/ti_am335x_tsc.h>
 #include <linux/delay.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 
 #define REG_RAWIRQSTATUS	0x024
 #define REG_IRQSTATUS		0x028
@@ -140,7 +138,7 @@ struct titsc {
 	unsigned int		wires;
 	unsigned int		x_plate_resistance;
 	bool			pen_down;
-	int			coordinate_readouts;
+	int			steps_to_configure;
 	u32			config_inp[4];
 	u32			bit_xp, bit_xn, bit_yp, bit_yn;
 	u32			inp_xp, inp_xn, inp_yp, inp_yn;
@@ -215,7 +213,7 @@ static void titsc_step_config(struct titsc *ts_dev)
 	int i, total_steps;
 
 	/* Configure the Step registers */
-	total_steps = 2 * ts_dev->coordinate_readouts;
+	total_steps = 2 * ts_dev->steps_to_configure;
 
 	config = STEPCONFIG_MODE_HWSYNC |
 			STEPCONFIG_AVG_16 | ts_dev->bit_xp;
@@ -233,7 +231,7 @@ static void titsc_step_config(struct titsc *ts_dev)
 		break;
 	}
 
-	for (i = 1; i <= ts_dev->coordinate_readouts; i++) {
+	for (i = 1; i <= ts_dev->steps_to_configure; i++) {
 		titsc_writel(ts_dev, REG_STEPCONFIG(i), config);
 		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPCONFIG_OPENDLY);
 	}
@@ -255,7 +253,7 @@ static void titsc_step_config(struct titsc *ts_dev)
 		break;
 	}
 
-	for (i = (ts_dev->coordinate_readouts + 1); i <= total_steps; i++) {
+	for (i = (ts_dev->steps_to_configure + 1); i <= total_steps; i++) {
 		titsc_writel(ts_dev, REG_STEPCONFIG(i), config);
 		titsc_writel(ts_dev, REG_STEPDELAY(i), STEPCONFIG_OPENDLY);
 	}
@@ -399,59 +397,6 @@ static irqreturn_t titsc_irq(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-static int titsc_parse_dt(struct ti_tscadc_dev *tscadc_dev,
-					struct titsc *ts_dev)
-{
-	struct device_node *node = tscadc_dev->dev->of_node;
-	int err;
-
-	if (!node)
-		return -EINVAL;
-	node = of_get_child_by_name(node, "tsc");
-	err = of_property_read_u32(node, "ti,wires", &ts_dev->wires);
-	if (err < 0)
-		return err;
-	switch (ts_dev->wires) {
-	case 4:
-	case 5:
-	case 8:
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	err = of_property_read_u32(node, "ti,x-plate-resistance",
-			&ts_dev->x_plate_resistance);
-	if (err < 0)
-		return err;
-
-	err = of_property_read_u32(node, "ti,coordinate-readouts",
-			&ts_dev->coordinate_readouts);
-	if (err < 0)
-		return err;
-
-	return of_property_read_u32_array(node, "ti,wire-config",
-			ts_dev->config_inp, ARRAY_SIZE(ts_dev->config_inp));
-}
-
-static int titsc_parse_pdata(struct ti_tscadc_dev *tscadc_dev,
-					struct titsc *ts_dev)
-{
-	struct mfd_tscadc_board	*pdata = tscadc_dev->dev->platform_data;
-
-	if (!pdata)
-		return -EINVAL;
-
-	ts_dev->wires = pdata->tsc_init->wires;
-	ts_dev->x_plate_resistance =
-		pdata->tsc_init->x_plate_resistance;
-	ts_dev->coordinate_readouts =
-		pdata->tsc_init->coordinate_readouts;
-	memcpy(ts_dev->config_inp, pdata->tsc_init->wire_config,
-		sizeof(pdata->tsc_init->wire_config));
-	return 0;
-}
-
 /*
  * The functions for inserting/removing driver as a module.
  */
@@ -570,7 +515,7 @@ static int __devinit titsc_probe(struct platform_device *pdev)
 		goto err_free_irq;
 	}
 	titsc_step_config(ts_dev);
-	titsc_writel(ts_dev, REG_FIFO0THR, ts_dev->coordinate_readouts);
+	titsc_writel(ts_dev, REG_FIFO0THR, ts_dev->steps_to_configure);
 
 	ctrl |= CNTRLREG_TSCSSENB;
 	titsc_writel(ts_dev, REG_CTRL, ctrl);

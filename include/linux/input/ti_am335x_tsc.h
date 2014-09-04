@@ -28,7 +28,7 @@
 struct tsc_data {
 	int wires;
 	int x_plate_resistance;
-	int coordinate_readouts;
+	int steps_to_configure;
 	int wire_config[10];
 };
 
