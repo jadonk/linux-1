@@ -8,7 +8,6 @@
  * kind, whether express or implied.
  */
 
-
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/dma-mapping.h>
@@ -33,123 +32,12 @@
 
 #include <linux/pwm.h>
 
-//#include "remoteproc_internal.h"
+#include "remoteproc_internal.h"
 
-#ifndef REMOTEPROC_INTERNAL_H
-#define REMOTEPROC_INTERNAL_H
+#include <linux/miscdevice.h>
+#include "beaglelogic_glue.h"
 
-#include <linux/irqreturn.h>
-#include <linux/firmware.h>
-
-/**
- * struct pru_shm - shared memory details per PRU
- * @idx: ID of the PRU this pru_shm structure represents. [PRU0 or PRU1]
- * @vaddr : virtual address of the shared memory, for access from kernel
- * @paddr : physical address of the shared memory, for access from PRU
- * @is_valid : this is = 1 if this structure represents a valid shared memory segment
- */
-
-struct pru_shm {
-	int idx;
-	void __iomem *vaddr;
-	void __iomem *paddr;
-	int size_in_pages;
-	unsigned int is_valid :1;
-};
-
-/* max/min shared memory segments per PRU */
-#define MAX_SHARED	4
-#define MIN_SHARED	2
-
-/* index for shm of botspeak code */
-#define BS_CODE		0
-/* index for shm of return values */
-#define BS_RET		1
-
-
-struct rproc;
-
-/**
- * struct rproc_fw_ops - firmware format specific operations.
- * @find_rsc_table:	finds the resource table inside the firmware image
- * @load:		load firmeware to memory, where the remote processor
- *			expects to find it
- * @sanity_check:	sanity check the fw image
- * @get_boot_addr:	get boot address to entry point specified in firmware
- */
-struct rproc_fw_ops {
-	struct resource_table *(*find_rsc_table) (struct rproc *rproc,
-						const struct firmware *fw,
-						int *tablesz);
-	int (*load)(struct rproc *rproc, const struct firmware *fw);
-	int (*sanity_check)(struct rproc *rproc, const struct firmware *fw);
-	u32 (*get_boot_addr)(struct rproc *rproc, const struct firmware *fw);
-};
-
-/* from remoteproc_core.c */
-void rproc_release(struct kref *kref);
-irqreturn_t rproc_vq_interrupt(struct rproc *rproc, int vq_id);
-
-/* from remoteproc_virtio.c */
-int rproc_add_virtio_dev(struct rproc_vdev *rvdev, int id);
-void rproc_remove_virtio_dev(struct rproc_vdev *rvdev);
-
-/* from remoteproc_debugfs.c */
-void rproc_remove_trace_file(struct dentry *tfile);
-struct dentry *rproc_create_trace_file(const char *name, struct rproc *rproc,
-					struct rproc_mem_entry *trace);
-void rproc_delete_debug_dir(struct rproc *rproc);
-void rproc_create_debug_dir(struct rproc *rproc);
-void rproc_init_debugfs(void);
-void rproc_exit_debugfs(void);
-
-void rproc_free_vring(struct rproc_vring *rvring);
-int rproc_alloc_vring(struct rproc_vdev *rvdev, int i);
-
-void *rproc_da_to_va(struct rproc *rproc, u64 da, int len);
-int rproc_trigger_recovery(struct rproc *rproc);
-
-static inline
-int rproc_fw_sanity_check(struct rproc *rproc, const struct firmware *fw)
-{
-	if (rproc->fw_ops->sanity_check)
-		return rproc->fw_ops->sanity_check(rproc, fw);
-
-	return 0;
-}
-
-static inline
-u32 rproc_get_boot_addr(struct rproc *rproc, const struct firmware *fw)
-{
-	if (rproc->fw_ops->get_boot_addr)
-		return rproc->fw_ops->get_boot_addr(rproc, fw);
-
-	return 0;
-}
-
-static inline
-int rproc_load_segments(struct rproc *rproc, const struct firmware *fw)
-{
-	if (rproc->fw_ops->load)
-		return rproc->fw_ops->load(rproc, fw);
-
-	return -EINVAL;
-}
-
-static inline
-struct resource_table *rproc_find_rsc_table(struct rproc *rproc,
-				const struct firmware *fw, int *tablesz)
-{
-	if (rproc->fw_ops->find_rsc_table)
-		return rproc->fw_ops->find_rsc_table(rproc, fw, tablesz);
-
-	return NULL;
-}
-
-extern const struct rproc_fw_ops rproc_elf_fw_ops;
-
-#endif /* REMOTEPROC_INTERNAL_H */
-
+#include "external_glue.h"
 
 /* PRU_EVTOUT0 is halt (system call) */
 
@@ -204,16 +92,6 @@ struct pruproc_core;
 /* maximum PWMs */
 #define PRU_PWM_MAX	32
 
-/* returns the initialized bin_attr struct for sysfs */
-#define BIN_ATTR(_name,_mode,_size,_read,_write,_mmap) { \
-       .attr = { .name  =  __stringify(_name),  .mode = _mode  },   \
-       .size = _size,                                         \
-       .read   = _read,                                      \
-       .write  = _write,                                      \
-       .mmap = _mmap,                                   \
-}
-
-
 struct pru_vring_info {
 	struct fw_rsc_vdev_vring *rsc;
 	struct vring vr;
@@ -267,10 +145,6 @@ struct pruproc_core {
 	struct mutex dc_lock;
 	wait_queue_head_t dc_waitq;
 	unsigned long dc_flags;
-	
-	/* shared memory details */
-	struct pru_shm shm[MAX_SHARED];	// should I have one struct or array of these structs
-
 #define PRU_DCF_DOWNCALL_REQ	0
 #define PRU_DCF_DOWNCALL_ACK	1
 #define PRU_DCF_DOWNCALL_ISSUE	2
@@ -320,7 +194,15 @@ struct pruproc {
 		int controller;
 		u32 dc_ids[DC_PWM_MAX];
 	} pwm;
+
+	struct beaglelogic_glue *beaglelogic;
 };
+
+/* For the BeagleLogic bindings */
+static struct pruproc *pp_bl;
+
+/* For the external bindings */
+static struct pruproc *pp_external;
 
 /* global memory map (for am33xx) (almost the same as local) */
 #define PRU_DATA_RAM0		0x00000
@@ -1276,12 +1158,11 @@ static struct rproc_ops pruproc_ops = {
 	.free_vring	= pruproc_free_vring,
 };
 
-static ssize_t pruproc_store_load(struct device *dev,
+static ssize_t pruproc_load(struct pruproc *pp,
+				struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct pruproc *pp = platform_get_drvdata(pdev);
 	struct pruproc_core *ppc;
 	char *fw_name[MAX_PRUS];
 	const char *s, *e, *t;
@@ -1389,12 +1270,32 @@ static ssize_t pruproc_store_load(struct device *dev,
 	return strlen(buf);
 }
 
-static ssize_t pruproc_store_reset(struct device *dev,
+static ssize_t pruproc_store_load(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct pruproc *pp = platform_get_drvdata(pdev);
+
+	return pruproc_load(pp, dev, attr, buf, count);
+}
+
+ssize_t pru_external_load(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	if(!pp_external)
+		return 0;
+
+	return pruproc_load(pp_external, dev, attr, buf, count);
+}
+EXPORT_SYMBOL(pru_external_load);
+
+static ssize_t pruproc_reset(struct pruproc *pp,
+				struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
 	struct pruproc_core *ppc;
 	int i;
 	u32 val;
@@ -1417,13 +1318,32 @@ static ssize_t pruproc_store_reset(struct device *dev,
 	return strlen(buf);
 }
 
+static ssize_t pruproc_store_reset(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pruproc *pp = platform_get_drvdata(pdev);
+
+	return pruproc_reset(pp, dev, attr, buf, count);
+}
+
+ssize_t pru_external_reset(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	if(!pp_external)
+		return 0;
+
+	return pruproc_reset(pp_external, dev, attr, buf, count);
+}
+EXPORT_SYMBOL(pru_external_reset);
+
 static int pru_downcall(struct pruproc_core *ppc,
 		u32 nr, u32 arg0, u32 arg1, u32 arg2, u32 arg3, u32 arg4);
 
 static int pru_downcall_idx(struct pruproc *pp, int idx,
 		u32 nr, u32 arg0, u32 arg1, u32 arg2, u32 arg3, u32 arg4);
-
-/*
 
 static ssize_t pruproc_store_downcall(int idx,
 		struct device *dev, struct device_attribute *attr,
@@ -1454,278 +1374,11 @@ static ssize_t pruproc_store_downcall1(struct device *dev,
 	return pruproc_store_downcall(1, dev, attr, buf, count);
 }
 
-*/
-
-/*
- * syscall #0 - useful while developing driver
- * 		writing 1 => all output pins in PRU control set high
- *		writing 0 => all output pins in PRU control set low
- */
-static ssize_t pru_speak_debug(int idx, struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct pruproc *pp = platform_get_drvdata(pdev);
-	int ret;
-	
-	if (count ==  0)
-		return -1;
-	if (buf[0] == '0')
-		ret = pru_downcall_idx(pp, idx, 0, 0, 0, 0, 0, 0);/*pp, idx, syscall_id, 5 args*/
-	else
-		ret = pru_downcall_idx(pp, idx, 0, 1, 0, 0, 0, 0);
-
-	printk( KERN_INFO "write to pru_speak_debug\n");
-	return strlen(buf);
-}
-
-static ssize_t pru_speak_debug0(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	return pru_speak_debug(0, dev, attr, buf, count);
-}
-
-/*
- * syscall #1 - used to initialize the shm info for both PRU and ARM
- * 		*reading* this file will give back hex value of physical address as a string
- *		at the same time PRU is also informed of the address via a downcall
- */
-
-static ssize_t pru_speak_shm_init(int idx, struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-        struct pruproc *pp = platform_get_drvdata(pdev);
-        int ret;
-
-	//struct pru_shm shm = pp->ppc->shm[BS_CODE];
-	struct pru_shm shm_code = pp->pru_to_pruc[idx]->shm[BS_CODE];
-	struct pru_shm shm_ret = pp->pru_to_pruc[idx]->shm[BS_RET];
-
-	printk("physical addr shm_code, shm_ret : %x, %x\n", (unsigned int)shm_code.paddr, (unsigned int)shm_ret.paddr);
-
-        ret = pru_downcall_idx(pp, idx, 1, (int)shm_code.paddr, (int)shm_ret.paddr, 10, 0, 0); //pp, idx, sys call id, base addr, val, junk,.,.
-	//The pru modifies the arg "10" and places "10^2" in the first loc of shm_code
-        printk( KERN_INFO "pru_speak_init, pram value : 10, return value : %d, modified value : %d\n", ret, *((int *)shm_code.vaddr));
-	
-	return scnprintf(buf, PAGE_SIZE, "%x,%x", (int)shm_code.paddr, (int)shm_ret.paddr);
-}
-
-static ssize_t pru_speak_shm_init0(struct device *dev, struct device_attribute *attr, char *buf)
-{
-        return pru_speak_shm_init(0, dev, attr, buf);
-}
-
-/*
- * syscall #2 - ask PRU to start execution.
- *		writing 1 => start/continue execution
- *		writing 0 => pause execution
- *
- * NOTE : pru_shm_init must be triggered before this. otherwise hell will chase you.
- */
-
-static ssize_t pru_speak_execute(int idx, struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        struct platform_device *pdev = to_platform_device(dev);
-        struct pruproc *pp = platform_get_drvdata(pdev);
-        int ret;
-	
-	if (count ==  0)
-                return -1;
-        if (buf[0] == '0')
-                ret = pru_downcall_idx(pp, idx, 2, 0, 0, 0, 0, 0);/*pp, idx, syscall_id, start/pause, 4 args*/
-        else
-                ret = pru_downcall_idx(pp, idx, 2, 1, 0, 0, 0, 0);
-
-        printk( KERN_INFO "write to pru_speak_execute\n");
-        return strlen(buf);
-
-}
-
-static ssize_t pru_speak_execute0(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        return pru_speak_execute(0, dev, attr, buf, count);
-}
-
-/*
- * syscall #3 - ask pru to abort currently executing BS script
- *		triggered by write to this file
- */
-
-static ssize_t pru_speak_abort(int idx, struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        struct platform_device *pdev = to_platform_device(dev);
-        struct pruproc *pp = platform_get_drvdata(pdev);
-        int ret;
-
-        ret = pru_downcall_idx(pp, idx, 3, 0, 0, 0, 0, 0); /* pp, idx, 5 args*/
-
-        printk( KERN_INFO "write to pru_speak_abort\n");
-        return strlen(buf);
-
-}
-
-static ssize_t pru_speak_abort0(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        return pru_speak_abort(0, dev, attr, buf, count);
-}
-
-/*
- * syscall #4 - get status of botspeak interpreter
- *		"read" returns 0 - if no BS code is being executed
- *		returns 1 - if BS code is being executed 
- */
-
-static ssize_t pru_speak_status(int idx, struct device *dev, struct device_attribute *attr, char *buf)
-{
-        struct platform_device *pdev = to_platform_device(dev);
-        struct pruproc *pp = platform_get_drvdata(pdev);
-        int ret = pru_downcall_idx(pp, idx, 4, 0, 0, 0, 0, 0); //pp, idx, sys call id, 5 params
-	
-	printk( KERN_INFO "read to pru_speak_status\n");
-        
-	return scnprintf(buf, PAGE_SIZE, "%d", ret);
-}
-
-static ssize_t pru_speak_status0(struct device *dev, struct device_attribute *attr, char *buf)
-{
-        return pru_speak_status(0, dev, attr, buf);
-}
-
-/*
- * syscall #5 - ask PRU to execute single BS instruction
- *		The Byte code of the BS instruction to be executed is written
- *		to this file.
- *		return value of downcall = 4 if OK, else value = ?
- */
-
-static ssize_t pru_speak_single_cmd(int idx, struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        struct platform_device *pdev = to_platform_device(dev);
-        struct pruproc *pp = platform_get_drvdata(pdev);
-        int inst = 0, ret, i;
-
-        if (count ==  0)
-                return -1;
-
-	//buf[0] = LSB; buf[3] = MSB
-	//the for loop packs the 4 incoming character into a 1 word long integer 
-	//viz one botspeak instruction (byte code)
-	for(i = 0; i < 4; i++){
-		inst |= ((int)buf[i]) << i*8;
-	}
-
-        ret = pru_downcall_idx(pp, idx, 5, inst, 0, 0, 0, 0);/*pp, idx, syscall_id, 5 args*/
-
-        printk( KERN_INFO "write to pru_speak_single_cmd. return value of downcall : %d\n", ret);
-	printk( "STRLEN(buf) : %d\n", strlen(buf)); //prints 0!!
-        //return strlen(buf); 
-	return 4; //quick hack
-}
-
-static ssize_t pru_speak_single_cmd0(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        return pru_speak_single_cmd(0, dev, attr, buf, count);
-}
-
-/*
- * syscall #6 - ask PRU to execute single 64 bit BS instruction
- *		The Byte code of the BS instruction to be executed is written
- *		to this file.
- *		return value of downcall = 8 if OK, else value = ?
- */
-
-static ssize_t pru_speak_single_cmd_64(int idx, struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        struct platform_device *pdev = to_platform_device(dev);
-        struct pruproc *pp = platform_get_drvdata(pdev);
-        int inst_a = 0, ret, i;
-        int inst_b = 0;
-
-	//buf[0] = LSB; buf[3] = MSB : for 1st word
-	//buf[4] = LSB; buf[7] = MSB : for 2nd word
-	//the for loop packs the 8 incoming character into two, 1 word long integers
-	//viz one botspeak instruction (byte code)
-	for(i = 0; i < 4; i++){
-		inst_a |= ((int)buf[i]) << i*8;
-	}
-
-	for(i = 4; i < 8; i++){
-		inst_b |= ((int)buf[i]) << (i-4)*8;
-	}
-	
-        ret = pru_downcall_idx(pp, idx, 6, inst_a, inst_b, 0, 0, 0);/*pp, idx, syscall_id, 5 args*/
-
-	printk("**** inst_a : %d, inst_b : %d", inst_a, inst_b);
-        printk( KERN_INFO "write to pru_speak_single_cmd_64. return value of downcall : %d\n", ret);
-	return 8; //quick hack
-}
-
-static ssize_t pru_speak_single_cmd0_64(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-        return pru_speak_single_cmd_64(0, dev, attr, buf, count);
-}
-
 static DEVICE_ATTR(load, S_IWUSR, NULL, pruproc_store_load);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, pruproc_store_reset);
-static DEVICE_ATTR(pru_speak_debug, S_IWUSR, NULL, pru_speak_debug0);
-static DEVICE_ATTR(pru_speak_shm_init, S_IWUSR | S_IRUGO, pru_speak_shm_init0, NULL);
-static DEVICE_ATTR(pru_speak_execute, S_IWUSR, NULL, pru_speak_execute0);
-static DEVICE_ATTR(pru_speak_abort, S_IWUSR, NULL, pru_speak_abort0);
-static DEVICE_ATTR(pru_speak_status, S_IRUGO, pru_speak_status0, NULL);
-static DEVICE_ATTR(pru_speak_single_cmd, S_IWUSR, NULL, pru_speak_single_cmd0);
-static DEVICE_ATTR(pru_speak_single_cmd_64, S_IWUSR, NULL, pru_speak_single_cmd0_64);
 
-/*
- *
- *	BIN FILE SYSFS - for mmap'ing. share mem b/w userspace, kernel and PRU
- *
- */
-/* Will develop this later
-void pru_vma_open(struct vm_area_struct *vma)
-{
-	printk(KERN_NOTICE "PRU Speak VMA open, virt %lx, phys %lx\n",
-            vma->vm_start, vma->vm_pgoff);
-}
-
-void pru_vma_close(struct vm_area_struct *vma)
-{
-	printk(KERN_NOTICE "PRU Speak VMA close.\n");
-}
-
-static struct vm_operations_struct pru_remap_vm_ops = {
-	.open =  pru_vma_open,
-	.close = pru_vma_close,
-};
-
-static ssize_t bin_file_read(struct file * f, struct kobject *kobj, struct bin_attribute *attr, char *buffer, loff_t pos, size_t size)
-{
-	printk(KERN_INFO "READ called on BIN FILE\n");
-	return (ssize_t)0;
-}
-
-static ssize_t bin_file_write(struct file *f, struct kobject *kobj, struct bin_attribute *attr, char *buffer, loff_t pos, size_t size)
-{
-	printk(KERN_INFO "WRITE called on BIN FILE\n");
-	return size;
-}
-
-static int bin_file_mmap(struct file *f, struct kobject *kobj, struct bin_attribute *attr,  struct vm_area_struct *vma)
-{
-	//printk(KERN_INFO "MMAP called on BIN FILE, PAGE_SHIFT value : %d\n", PAGE_SHIFT);
-	if (remap_pfn_range(vma, vma->vm_start, (unsigned long)((int)shm.paddr >> PAGE_SHIFT), vma->vm_end - vma->vm_start, vma->vm_page_prot))
-	{
-		printk("MMAP failed\n");
-		return -EAGAIN;
-	}
-
-	vma->vm_ops = &pru_remap_vm_ops;
-	pru_vma_open(vma);
-
-	printk("physical address that was to be maped %x : \n", (int)shm.paddr);
-	printk("MMAP successful\n");
-	return 0;
-}
-
-static struct bin_attribute pru_speak_bin_attr = BIN_ATTR(pru_speak_binfile, S_IWUSR | S_IRUGO, PAGE_SIZE, bin_file_read, bin_file_write, bin_file_mmap);
-*/
+static DEVICE_ATTR(downcall0, S_IWUSR, NULL, pruproc_store_downcall0);
+static DEVICE_ATTR(downcall1, S_IWUSR, NULL, pruproc_store_downcall1);
 
 /* PRU is unregistered */
 static int pruproc_remove(struct platform_device *pdev)
@@ -1739,16 +1392,7 @@ static int pruproc_remove(struct platform_device *pdev)
 
 	device_remove_file(dev, &dev_attr_reset);
 	device_remove_file(dev, &dev_attr_load);
-	device_remove_file(dev, &dev_attr_pru_speak_debug);
-	device_remove_file(dev, &dev_attr_pru_speak_shm_init);
-	device_remove_file(dev, &dev_attr_pru_speak_execute);
-	device_remove_file(dev, &dev_attr_pru_speak_abort);
-	device_remove_file(dev, &dev_attr_pru_speak_status);
-	device_remove_file(dev, &dev_attr_pru_speak_single_cmd);
-	device_remove_file(dev, &dev_attr_pru_speak_single_cmd_64);
-	//sysfs_remove_bin_file( (&dev->kobj), &pru_speak_bin_attr);
-	
-	
+
 	/* Unregister as remoteproc device */
 	for (i = pp->num_prus - 1; i >= 0; i--) {
 		ppc = pp->pruc[i];
@@ -1758,15 +1402,6 @@ static int pruproc_remove(struct platform_device *pdev)
 		if (ppc->dev_table_va != NULL)
 			dma_free_coherent(dev, PAGE_ALIGN(ppc->table_size),
 					ppc->dev_table_va, ppc->dev_table_pa);
-
-		//if( (ppc->idx == shm.idx) && (shm.is_valid == 1) )
-	          //      dma_free_coherent(dev, PAGE_SIZE, shm.vaddr, (dma_addr_t)shm.paddr);
-		for (i=0; i < MAX_SHARED; i++){
-			if(ppc->shm[i].is_valid)
-				dma_free_coherent(dev, ppc->shm[i].size_in_pages * PAGE_SIZE,ppc->shm[i].vaddr, 
-											(dma_addr_t)ppc->shm[i].paddr);
-		}
-
 	}
 
 	platform_set_drvdata(pdev, NULL);
@@ -1875,9 +1510,7 @@ static int pru_handle_syscall(struct pruproc_core *ppc)
 	arg1 = pru_read_cpu_reg(ppc, 16);
 	arg2 = pru_read_cpu_reg(ppc, 17);
 	ret  = 0;	/* by default we return 0 */
-	
-	printk(KERN_INFO "pru_handle_syscall - entering switch. value scno (r14) : %d\n", scno);
-	
+
 	switch (scno) {
 		case PRU_SC_HALT:
 			dev_info(dev, "P%d HALT\n",
@@ -1962,13 +1595,9 @@ static int pru_handle_syscall(struct pruproc_core *ppc)
 
 		case PRU_SC_DOWNCALL_READY:
 			/* if we were waiting for it, wake up */
-
-			printk(KERN_INFO "#1 Function pru_handle_syscall - pru idx:%d, dc_flags : %lu\n", ppc->idx, ppc->dc_flags);
-
 			if (test_and_clear_bit(PRU_DCF_DOWNCALL_REQ, &ppc->dc_flags)) {
 				set_bit(PRU_DCF_DOWNCALL_ACK, &ppc->dc_flags);
 				wake_up_interruptible(&ppc->dc_waitq);
-				printk(KERN_INFO "#1.5 Function pru_handle_syscall, dc_flags : %lu\n", ppc->dc_flags);
 				return 1;
 			}
 			dev_err(dev, "P%d No-one expected downcall; halting\n",
@@ -1977,13 +1606,9 @@ static int pru_handle_syscall(struct pruproc_core *ppc)
 
 		case PRU_SC_DOWNCALL_DONE:
 			/* if we were waiting for it, wake up */
-
-                        printk(KERN_INFO "#2 Function pru_handle_syscall - pru idx:%d, dc_flags : %lu\n", ppc->idx, ppc->dc_flags);
-
 			if (test_and_clear_bit(PRU_DCF_DOWNCALL_ISSUE, &ppc->dc_flags)) {
 				set_bit(PRU_DCF_DOWNCALL_DONE, &ppc->dc_flags);
 				wake_up_interruptible(&ppc->dc_waitq);
-				printk(KERN_INFO "#2.5 Function pru_handle_syscall, dc_flags : %lu\n", ppc->dc_flags);
 				return 1;
 			}
 			dev_err(dev, "P%d No-one expected downcall; halting\n",
@@ -2049,8 +1674,6 @@ static int pru_downcall(struct pruproc_core *ppc,
 		ret = -EBUSY;
 		goto ret_unlock;
 	}
-	
-	printk(KERN_INFO "#1 Function pru_downcall - pru idx:%d, sysevent : %d, dc_flags : %lu\n", ppc->idx, sysint, ppc->dc_flags);
 
 	if (test_and_set_bit(PRU_DCF_DOWNCALL_REQ, &ppc->dc_flags) != 0) {
 		dev_err(dev, "PRU#%d downcall failed due to mangled req bit\n",
@@ -2058,9 +1681,7 @@ static int pru_downcall(struct pruproc_core *ppc,
 		ret = -EBUSY;
 		goto ret_unlock;
 	}
-	
-	printk(KERN_INFO "#2 Function pru_downcall - pru idx:%d, sysevent : %d, dc_flags : %lu\n", ppc->idx, sysint, ppc->dc_flags);
-	
+
 	/* signal downcall event */
 	if (sysint < 32)
 		pintc_write_reg(pp, PINTC_SRSR0, 1 << sysint);
@@ -2085,8 +1706,6 @@ static int pru_downcall(struct pruproc_core *ppc,
 	}
 	dev_dbg(dev, "PRU#%d got downcall ready\n", ppc->idx);
 
-	printk(KERN_INFO "#3 Function pru_downcall - Got downcall ready, dc_flags : %lu\n", ppc->dc_flags);
-
 	ret = pru_is_halted(ppc, &addr);
 	if (ret != 0) {
 		dev_err(dev, "PRU#%d not halted\n",
@@ -2096,7 +1715,6 @@ static int pru_downcall(struct pruproc_core *ppc,
 	}
 
 	/* get the actual return address */
-	//r3in = pru_read_cpu_reg(ppc, 3) << 2;
 	r3in = (pru_read_cpu_reg(ppc, 3) >> 16) << 2;
 
 	/* write the arguments */
@@ -2112,8 +1730,6 @@ static int pru_downcall(struct pruproc_core *ppc,
 	/* skip over the HALT insn */
 	pru_resume(ppc, addr + 4);
 
-	printk(KERN_INFO "#4 Function pru_downcall - set up args done, dc_flags : %lu\n",  ppc->dc_flags);
-	
 	/* now waiting until we get the downcall ready (maximum 100ms) */
 	intr = wait_event_interruptible_timeout(ppc->dc_waitq,
 		test_and_clear_bit(PRU_DCF_DOWNCALL_DONE, &ppc->dc_flags),
@@ -2132,12 +1748,8 @@ static int pru_downcall(struct pruproc_core *ppc,
 	}
 	dev_dbg(dev, "PRU#%d got downcall done\n", ppc->idx);
 
-	printk(KERN_INFO "#4 Function pru_downcall - downcall done. reading return value, dc_flags : %lu\n",  ppc->dc_flags);
-	
 	/* return */
 	ret = pru_read_cpu_reg(ppc, 0);
-	
-	printk(KERN_INFO "RETURN value of pru_downcall : %d\n", ret);
 
 	/* and we're done */
 	pru_resume(ppc, r3in);
@@ -2234,6 +1846,11 @@ static irqreturn_t pru_handler(int irq, void *data)
 	rproc = ppc->rproc;
 
 	handled = 0;
+
+	/* Handle BeagleLogic interrupts (same as vrings)
+	 * This takes precedence when BeagleLogic is enabled and bound */
+	if (pst->vring == 1 && pp->beaglelogic)
+		return pp->beaglelogic->serve_irq(pru_idx, pp->beaglelogic);
 
 	/* we either handle a vring or not */
 	if (!pst->vring) {
@@ -2787,6 +2404,110 @@ static int pruproc_create_devices(struct pruproc *pp)
 	return ret;
 }
 
+/* BeagleLogic plugin code section */
+
+/* Downcall wrapper */
+static int beaglelogic_pru_downcall(int pru_no, u32 nr, u32 arg0, u32 arg1,
+		u32 arg2, u32 arg3, u32 arg4)
+{
+	return pru_downcall_idx(pp_bl, pru_no, nr, arg0,
+			arg1, arg2, arg3, arg4);
+}
+
+/* Request VA to remapped PRU memory area */
+static void * __iomem beaglelogic_pru_d_da_to_va(int idx, u32 daddr)
+{
+	return pru_d_da_to_va(pp_bl->pru_to_pruc[idx], daddr, NULL);
+}
+
+/* Post-configuration, resume the PRU [reserved for a future FWrev] */
+static int beaglelogic_pru_start(int idx)
+{
+	/* u32 addr; */
+
+	/* TODO Attempt to start halted PRU, skip over HALT */
+	/*
+	if (pru_is_halted(pp_bl->pru_to_pruc[idx], &addr)) {
+		return -1;
+	}
+	pru_resume(pp_bl->pru_to_pruc[idx], addr + 4);
+	*/
+	return 0;
+}
+
+/* Signal the PRU Firmware to abort after the next buffer */
+static void beaglelogic_pru_request_stop(void)
+{
+	/* ARM -> PRU1 interrupt */
+	u32 sysint = pp_bl->target_to_sysev[TARGET_ARM_TO_PRU_IDX(1)];
+
+	/* Raise interrupt */
+	if (sysint < 32)
+		pintc_write_reg(pp_bl, PINTC_SRSR0, 1 << sysint);
+	else
+		pintc_write_reg(pp_bl, PINTC_SRSR1, 1 << (sysint - 32));
+}
+
+/* The BeagleLogic module requests attach to the remoteproc module here */
+int pruproc_beaglelogic_request_bind(struct beaglelogic_glue *g)
+{
+	if (pp_bl == NULL)
+		return -1;
+
+	/* Export the fp's to BeagleLogic functions located in this module */
+	g->downcall_idx = beaglelogic_pru_downcall;
+	g->d_da_to_va = beaglelogic_pru_d_da_to_va;
+	g->pru_request_stop = beaglelogic_pru_request_stop;
+	g->pru_start = beaglelogic_pru_start;
+
+	g->coreclockfreq = pp_bl->clock_freq;
+
+	pp_bl->beaglelogic = g;
+
+	return 0;
+}
+EXPORT_SYMBOL(pruproc_beaglelogic_request_bind);
+
+void pruproc_beaglelogic_request_unbind(void)
+{
+	/* Invalidate our handle to the module exported functions */
+	pp_bl->beaglelogic = NULL;
+}
+EXPORT_SYMBOL(pruproc_beaglelogic_request_unbind);
+
+static void pruproc_beaglelogic_init_bindings(struct pruproc *pp)
+{
+	pp_bl = pp;
+}
+/* End BeagleLogic Section */
+
+static int external_pru_downcall(int pru_no, u32 nr, u32 arg0, u32 arg1,
+		u32 arg2, u32 arg3, u32 arg4)
+{
+	return pru_downcall_idx(pp_external, pru_no, nr, arg0,
+			arg1, arg2, arg3, arg4);
+}
+
+int pruproc_external_request_bind(struct pru_rproc_external_glue *g)
+{
+	if (pp_external == NULL)
+		return -1;
+
+	g->downcall_idx = external_pru_downcall;
+
+	return 0;
+}
+EXPORT_SYMBOL(pruproc_external_request_bind);
+
+void pruproc_external_request_unbind(void)
+{
+}
+EXPORT_SYMBOL(pruproc_external_request_unbind);
+
+static void pruproc_external_init_bindings(struct pruproc *pp)
+{
+	pp_external = pp;
+}
 
 static int pruproc_probe(struct platform_device *pdev)
 {
@@ -2801,10 +2522,9 @@ static int pruproc_probe(struct platform_device *pdev)
 	struct rproc *rproc = NULL;
 	struct resource *res;
 	struct pinctrl *pinctrl;
-	int err, i, j, irq, sysev, x;
+	int err, i, j, irq, sysev;
 	u32 tmparr[4], pru_idx, val;
 	u32 tmpev[MAX_ARM_PRU_INTS];
-	int shm_count = 0;
 
 	/* get pinctrl */
 	pinctrl = devm_pinctrl_get_select_default(dev);
@@ -3090,49 +2810,6 @@ static int pruproc_probe(struct platform_device *pdev)
 		else
 			rproc->fw_ops = &pruproc_elf_fw_ops;
 
-		/* PRU Speak shared memory stuff */
-		
-		printk("Entering SHM section\n");
-		err = of_property_read_u32(pnode, "shm-count", &shm_count);
-		
-		if (err != 0) {
-			dev_err(dev, "can't find property %s\n", "shm-count");
-			of_node_put(pnode);
-			goto err_fail;
-		}		
-
-		/* make sure the count is within limits expected */
-		if ((shm_count < MIN_SHARED) || (shm_count > MAX_SHARED)){
-			dev_err(dev, "expected device count min : %d, max : %d\n", MIN_SHARED, MAX_SHARED);
-			of_node_put(pnode);
-			goto err_fail;
-		}
-
-		err = of_property_read_u32_array(pnode, "shm-size", tmparr, shm_count);
-		if (err != 0) {
-			dev_err(dev, "no shm-size property\n");
-			goto err_fail;
-		}
-		printk("Starting to initialize SHMs\n");
-		/* assign idx, shared memory size for each segment for this pru */
-		for(x=0; x < shm_count; x++){
-			ppc->shm[x].size_in_pages = tmparr[x];
-			ppc->shm[x].idx = pru_idx;
-
-			/* mark valid each shm segment, allocate space for it*/
-			printk("Initializing shm #%d for PRU%d \n", x, pru_idx);
-			ppc->shm[x].is_valid = 1;
-			ppc->shm[x].vaddr = dma_zalloc_coherent(dev, ppc->shm[x].size_in_pages * PAGE_SIZE, 
-									(dma_addr_t *) &(ppc->shm[x].paddr), GFP_DMA);
-
-			if(!(ppc->shm[x].vaddr)){
-				ppc->shm[x].is_valid = 0;
-				printk("shm init failed\n");
-			}
-		}
-		
-		printk("SHM initalization sequence is now complete\n");
-		/* important */
 		pp->pruc[i] = ppc;
 		pp->pru_to_pruc[pru_idx] = ppc;
 		i++;
@@ -3140,7 +2817,6 @@ static int pruproc_probe(struct platform_device *pdev)
 	pnode = NULL;
 
 	/* clean up the sysev to target map */
-	printk("clean up the sysev to target map\n");
 	memset(pp->sysev_to_target, 0, sizeof(pp->sysev_to_target));
 	for (i = 0; i < ARRAY_SIZE(pp->sysev_to_target); i++) {
 		pst = &pp->sysev_to_target[i];
@@ -3149,7 +2825,6 @@ static int pruproc_probe(struct platform_device *pdev)
 	}
 
 	/* fill in the sysev target map for std. signaling */
-	printk("fill in the sysev target map for std. signaling\n");
 	for (i = 0; i < MAX_TARGETS; i++) {
 		for (j = 0; j < MAX_TARGETS; j++) {
 			/* target self? don't care*/
@@ -3173,10 +2848,10 @@ static int pruproc_probe(struct platform_device *pdev)
 	}
 
 	/* fill in the sysev target map from vring info */
-	printk("fill in the sysev target map from vring info\n");
 	for (i = 0; i < pp->num_prus; i++) {
 		ppc = pp->pruc[i];
 		pru_idx = ppc->idx;
+
 		sysev = ppc->host_vring_sysev;
 		if (sysev != -1) {
 			pst = &pp->sysev_to_target[sysev];
@@ -3189,6 +2864,7 @@ static int pruproc_probe(struct platform_device *pdev)
 			pst->vring = 1;
 			pst->valid = 1;
 		}
+
 		sysev = ppc->pru_vring_sysev;
 		if (sysev != -1) {
 			pst = &pp->sysev_to_target[sysev];
@@ -3204,7 +2880,6 @@ static int pruproc_probe(struct platform_device *pdev)
 	}
 
 	/* dump the sysev target map */
-	printk("dump the sysev target map\n");
 	for (i = 0; i < ARRAY_SIZE(pp->sysev_to_target); i++) {
 		pst = &pp->sysev_to_target[i];
 		if (!pst->valid)
@@ -3214,7 +2889,6 @@ static int pruproc_probe(struct platform_device *pdev)
 	}
 
 	/* register the interrupts */
-	printk("register the interrupts\n");
 	for (i = 0; i < pp->num_irqs; i++) {
 
 		irq = pp->irqs[i];
@@ -3227,8 +2901,6 @@ static int pruproc_probe(struct platform_device *pdev)
 	}
 
 	/* start the remote procs */
-	printk("start the remote procs\n");
-
 	for (i = 0; i < pp->num_prus; i++) {
 		ppc = pp->pruc[i];
 
@@ -3248,9 +2920,7 @@ static int pruproc_probe(struct platform_device *pdev)
 			}
 		}
 	}
-	
-	printk("Creating sysfs entries\n");
-	
+
 	err = device_create_file(dev, &dev_attr_load);
 	if (err != 0) {
 		dev_err(dev, "device_create_file failed\n");
@@ -3262,7 +2932,7 @@ static int pruproc_probe(struct platform_device *pdev)
 		dev_err(dev, "device_create_file failed\n");
 		goto err_fail;
 	}
-/*
+
 	err = device_create_file(dev, &dev_attr_downcall0);
 	if (err != 0) {
 		dev_err(dev, "device_create_file failed\n");
@@ -3274,71 +2944,22 @@ static int pruproc_probe(struct platform_device *pdev)
 		dev_err(dev, "device_create_file failed\n");
 		goto err_fail;
 	}
-*/	
-	err = device_create_file(dev, &dev_attr_pru_speak_debug);
-	if (err != 0) {
-		dev_err(dev, "device_create_file failed\n");
-		goto err_fail;
-	}
-	
-		
-	err = device_create_file(dev, &dev_attr_pru_speak_shm_init);
-        if (err != 0) {
-                dev_err(dev, "device_create_file failed\n");
-                goto err_fail;
-        }
 
-	err = device_create_file(dev, &dev_attr_pru_speak_execute);
-        if (err != 0) {
-                dev_err(dev, "device_create_file failed\n");
-                goto err_fail;
-        }
-
-	err = device_create_file(dev, &dev_attr_pru_speak_abort);
-        if (err != 0) {
-                dev_err(dev, "device_create_file failed\n");
-                goto err_fail;
-        }
-
-        err = device_create_file(dev, &dev_attr_pru_speak_status);
-        if (err != 0) {
-                dev_err(dev, "device_create_file failed\n");
-                goto err_fail;
-        }
-
-        err = device_create_file(dev, &dev_attr_pru_speak_single_cmd);
-        if (err != 0) {
-                dev_err(dev, "device_create_file failed\n");
-                goto err_fail;
-        }
-
-	err = device_create_file(dev, &dev_attr_pru_speak_single_cmd_64);
-        if (err != 0) {
-                dev_err(dev, "device_create_file failed\n");
-                goto err_fail;
-        }
-
-/*
-	err = sysfs_create_bin_filr(&(dev->kobj), &pru_speak_bin_attr);
-	if (err != 0){
-                printk(KERN_INFO "BIN FILE could not be created");
-                goto err_fail;
-        }
-	else{
-		printk(KERN_INFO "PRU SPEAK bin attribute created\n");
-	}
-*/
 	dev_info(dev, "Loaded OK\n");
 
 	/* creating devices */
 	pruproc_create_devices(pp);
 
+	/* init the BeagleLogic binding section */
+	pruproc_beaglelogic_init_bindings(pp);
+
+	/* init the external downcall binding section */
+	pruproc_external_init_bindings(pp);
+
 	(void)pru_d_read_u32;
 	(void)pru_i_write_u32;
 	(void)pru_d_write_u32;
 
-	printk("Probe successful");
-	
 	return 0;
 err_fail:
 	/* NULL is OK */
@@ -3351,41 +2972,23 @@ err_fail:
 	return err;
 }
 
-static const struct of_device_id pru_speak_dt_ids[] = {
-	{ .compatible = "ti,pru_speak", .data = NULL, },
+static const struct of_device_id pru_rproc_dt_ids[] = {
+	{ .compatible = "ti,pru-rproc", .data = NULL, },
 	{},
 };
-//MODULE_DEVICE_TABLE(of, pruss_dt_ids);
+MODULE_DEVICE_TABLE(of, pruss_dt_ids);
 
-static struct platform_driver pru_speak_driver = {
+static struct platform_driver pruproc_driver = {
 	.driver	= {
-		.name	= "pru_speak",
+		.name	= "pru-rproc",
 		.owner	= THIS_MODULE,
-		.of_match_table = pru_speak_dt_ids,
+		.of_match_table = pru_rproc_dt_ids,
 	},
 	.probe	= pruproc_probe,
 	.remove	= pruproc_remove,
 };
 
-//module_platform_driver(pruproc_driver);
-
-
-static int __init pru_speak_init(void)
-{
-	printk(KERN_INFO "pru_speak loaded\n");
-	platform_driver_register(&pru_speak_driver);
-	return 0;
-}
-
-static void __exit pru_speak_exit(void)
-{
-	printk(KERN_INFO "pru_speak unloaded\n");
-	platform_driver_unregister(&pru_speak_driver);
-}
-
-module_init(pru_speak_init);
-module_exit(pru_speak_exit);
-
+module_platform_driver(pruproc_driver);
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("PRU speak driver");
+MODULE_DESCRIPTION("PRU Remote Processor control driver");
 MODULE_AUTHOR("Pantelis Antoniou <panto@antoniou-consulting.com>");
